@@ -1,5 +1,6 @@
 #!/usr/bin/python
 
+import datetime
 from   decimal import Decimal
 import glob
 import os
@@ -84,29 +85,33 @@ else:
           SELECT * FROM log
           WHERE event = 'resume'
           ORDER BY TIME DESC
-          LIMIT 1
+          LIMIT 5
           """
     res = cur.execute(sql)
-    resume = res.fetchone()
+    last_resumes = res.fetchall()
 
     sql = """
           SELECT * FROM log
           WHERE event = 'suspend'
           ORDER BY TIME DESC
-          LIMIT 1
+          LIMIT 5
           """
     res = cur.execute(sql)
-    suspend = res.fetchone()
+    last_suspends = res.fetchall()
 
     con.close()
 
+    # Get last suspend and resume
+    last_resume = last_resumes[0]
+    last_suspend = last_suspends[0]
+
     # Get Time
-    delta_s = resume['time'] - suspend['time']
+    delta_s = last_resume['time'] - last_suspend['time']
     delta_h = Decimal(delta_s/3600)
 
     # Get Power Used - we use min vs now since we don't have voltage_avg / smoothing, probably safer...
     # energy_used_wh = Decimal((suspend['energy_now'] - resume['energy_now'])/1000000000000)
-    energy_used_wh = Decimal((suspend['energy_min'] - resume['energy_min'])/1000000000000)
+    energy_used_wh = Decimal((last_suspend['energy_min'] - last_resume['energy_min'])/1000000000000)
 
     # Average Power Use
     power_use_w = energy_used_wh / delta_h
@@ -114,16 +119,34 @@ else:
     # Full Battery Power (presumably we should use min/nominal here?)
     with open('/sys/class/power_supply/BAT1/charge_full') as f:
         charge_full = int(f.read())
-    energy_full_wh = Decimal(charge_full/1000000000000) * resume['voltage_min_design']
+    energy_full_wh = Decimal(charge_full/1000000000000) * last_resume['voltage_min_design']
 
     # Percentage Battery Used / hour
     percent_per_h = 100 * power_use_w / energy_full_wh
 
     # Time left from resume
-    until_empty_h = Decimal(resume['energy_min']/1000000000000)/ power_use_w
+    until_empty_h = Decimal(last_resume['energy_min']/1000000000000)/ power_use_w
 
-
+    print('Last Sleep:')
+    print('====================')
     print('Slept for {:.2f} hours'.format(delta_h))
     print('Used {:.2f} Wh, an average rate of {:.2f} W'.format(energy_used_wh, power_use_w))
     # print('At {:.2f}/Wh drain you battery would be empty in {:.2f} hours'.format(power_use_w, until_empty_h))
     print('For your {:.2f} Wh battery this is {:.2f}%/hr or {:.2f}%/day'.format(energy_full_wh, percent_per_h, percent_per_h*24))
+
+    print() # Blank line
+
+    print('Last (up to) 5 Sleeps:')
+    print('====================')
+    print('--------------------------------------------------------------------------------------------------------------')
+    print('|     Suspend Time    |     Resume Time     | Time Asleep (hrs) |    Wh    |   Rate   |   %/hr   |   %/day   |')
+    print('--------------------------------------------------------------------------------------------------------------')
+    for resume, suspend in zip(last_resumes, last_suspends):
+        delta_s = resume['time'] - suspend['time']
+        delta_h = Decimal(delta_s/3600)
+        energy_used_wh = Decimal((suspend['energy_min'] - resume['energy_min'])/1_000_000_000_000)
+        power_use_w = energy_used_wh / delta_h
+        until_empty_h = Decimal(resume['energy_min']/1_000_000_000_000)/ power_use_w
+        percent_per_h = 100 * power_use_w / energy_full_wh
+        print(f'| {datetime.datetime.fromtimestamp(suspend["time"]):%Y-%m-%d %H:%M:%S} | {datetime.datetime.fromtimestamp(resume["time"]):%Y-%m-%d %H:%M:%S} | {delta_h:17.2f} | {energy_used_wh:8.2f} | {power_use_w:8.2f} | {percent_per_h:8.2f} | {percent_per_h*24:9.2f} |')
+        print('--------------------------------------------------------------------------------------------------------------')
